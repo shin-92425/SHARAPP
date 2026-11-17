@@ -5,8 +5,10 @@ import 'package:intl/intl.dart';
 
 import '../models/capture_record.dart';
 import '../services/db_helper.dart';
+import '../services/speech_service.dart';
 import '../theme.dart';
 import '../widgets/shape_painters.dart';
+import 'parent_corner_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
@@ -22,6 +24,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    SpeechService.instance.stop();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -69,6 +77,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
         title: const Text('My Shapes',
             style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
         actions: [
+          IconButton(
+            tooltip: 'Parent Corner',
+            iconSize: 28,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ParentCornerScreen()),
+            ),
+            icon: const Icon(Icons.insights_rounded),
+          ),
           if (items != null && items.isNotEmpty)
             IconButton(
               tooltip: 'Delete all',
@@ -144,6 +160,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 ),
               ],
             ),
+          ),
+          IconButton(
+            tooltip: 'Say it',
+            iconSize: 30,
+            color: AppColors.blue,
+            onPressed: () => SpeechService.instance.speakShape(r.label),
+            icon: const Icon(Icons.volume_up_rounded),
           ),
           IconButton(
             tooltip: 'Delete',

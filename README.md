@@ -40,7 +40,6 @@ The first build downloads the OpenCV binaries, so it needs internet and takes a 
 * **Point the back camera at a shape.** A blue outline appears around it and its name is shown below the picture.
 * **Snap!** (big round button) saves one picture of the shape that is currently recognised.
 * **Auto** (left) is *continuous* mode. While it is on (blue), every shape the app is sure about is saved automatically, at most once every ~2.5 seconds. Tap again to turn it off.
-* **Pause / Resume** (right) freezes the camera. Snap! still saves the frozen shape.
 * **Exit** (top left) closes the app after asking "Close Shape Buddy?".
 * **History** (top right) opens *My Shapes*: every saved shape with its name, date and time. Tap the bin to delete one (it asks first); the sweep icon at the top deletes all.
 
@@ -60,10 +59,18 @@ python collect_data.py --source http://192.168.1.5:4747/video
 # or USB / DroidCam client:  python collect_data.py --source 1   (try 0, 1, 2 ...)
 ```
 
-In the video window: press `1`-`5` to say which shape you are showing
-(1 circle, 2 heart, 3 square, 4 star, 5 triangle), `SPACE` = single capture,
-`C` = continuous capture, `P` = pause, `Q` = exit. The green line is the
-outline the app would draw. If the picture is sideways add `--rotate 90`.
+The collector window shows the live video with the outline the app would draw, and a
+panel of buttons underneath. Click a button or press its key:
+
+| Button | Key | What it does |
+|---|---|---|
+| 1 Circle ... 5 Triangle | `1`-`5` | Choose the shape you are showing. Each button also shows how many pictures that shape has so far. |
+| Single capture | `SPACE` | Saves one picture now. |
+| Continuous | `C` | On/off. While on, saves a picture about 3 times a second for as long as a shape is seen ("REC - saving" shows at the top right). Change the speed with `--interval 0.5` (seconds between pictures). |
+| Pause / Resume | `P` | Stops **all** saving, including continuous mode, so you can swap or move the shape. The live video keeps running. Press again and continuous capture carries on. |
+| Exit | `Q` or `ESC` | Closes the collector and prints the totals. |
+
+If the picture is sideways add `--rotate 90`.
 
 Collect **150+ per shape**, turning and tilting the shape between captures, and
 in a few different lighting conditions. Then retrain:

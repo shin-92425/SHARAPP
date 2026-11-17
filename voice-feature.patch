@@ -1,0 +1,136 @@
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index 14e5353..c6d67ef 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -42,5 +42,9 @@
+             <action android:name="android.intent.action.PROCESS_TEXT"/>
+             <data android:mimeType="text/plain"/>
+         </intent>
++        <!-- Needed on Android 11+ so flutter_tts can find the text-to-speech engine -->
++        <intent>
++            <action android:name="android.intent.action.TTS_SERVICE"/>
++        </intent>
+     </queries>
+ </manifest>
+diff --git a/lib/screens/history_screen.dart b/lib/screens/history_screen.dart
+index 27a16eb..d3c1273 100644
+--- a/lib/screens/history_screen.dart
++++ b/lib/screens/history_screen.dart
+@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
+ 
+ import '../models/capture_record.dart';
+ import '../services/db_helper.dart';
++import '../services/speech_service.dart';
+ import '../theme.dart';
+ import '../widgets/shape_painters.dart';
+ 
+@@ -24,6 +25,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
+     _load();
+   }
+ 
++  @override
++  void dispose() {
++    SpeechService.instance.stop();
++    super.dispose();
++  }
++
+   Future<void> _load() async {
+     final rows = await DbHelper.instance.all();
+     if (mounted) setState(() => _items = rows);
+@@ -145,6 +152,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
+               ],
+             ),
+           ),
++          IconButton(
++            tooltip: 'Say it',
++            iconSize: 30,
++            color: AppColors.blue,
++            onPressed: () => SpeechService.instance.speakShape(r.label),
++            icon: const Icon(Icons.volume_up_rounded),
++          ),
+           IconButton(
+             tooltip: 'Delete',
+             iconSize: 30,
+diff --git a/lib/screens/home_screen.dart b/lib/screens/home_screen.dart
+index 34d95fe..5af578f 100644
+--- a/lib/screens/home_screen.dart
++++ b/lib/screens/home_screen.dart
+@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
+ 
+ import '../services/db_helper.dart';
+ import '../services/shape_detector.dart';
++import '../services/speech_service.dart';
+ import '../theme.dart';
+ import '../widgets/shape_painters.dart';
+ import 'history_screen.dart';
+@@ -183,6 +184,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
+   Future<void> _save(DetectionResult r) async {
+     final png = await renderCapturePng(r.silhouette);
+     await DbHelper.instance.insert(label: r.label, confidence: r.confidence, png: png);
++    SpeechService.instance.speakShape(r.label); // say the shape after it is captured
+     if (!mounted) return;
+     setState(() => _flash = true);
+     Future.delayed(const Duration(milliseconds: 150), () {
+diff --git a/lib/services/speech_service.dart b/lib/services/speech_service.dart
+new file mode 100644
+index 0000000..5ca5197
+--- /dev/null
++++ b/lib/services/speech_service.dart
+@@ -0,0 +1,45 @@
++import 'package:flutter/foundation.dart';
++import 'package:flutter_tts/flutter_tts.dart';
++
++import '../widgets/shape_painters.dart';
++
++/// Speaks shape names out loud (English only).
++class SpeechService {
++  SpeechService._();
++  static final SpeechService instance = SpeechService._();
++
++  final FlutterTts _tts = FlutterTts();
++  bool _ready = false;
++
++  Future<void> _init() async {
++    if (_ready) return;
++    try {
++      await _tts.setLanguage('en-US');
++      await _tts.setSpeechRate(0.45); // a little slower, kid friendly
++      await _tts.setPitch(1.1);
++      await _tts.setVolume(1.0);
++      await _tts.awaitSpeakCompletion(false);
++      _ready = true;
++    } catch (e) {
++      debugPrint('TTS init failed: $e');
++    }
++  }
++
++  /// Say the shape name, e.g. "Circle". Interrupts anything already speaking.
++  Future<void> speakShape(String label) async {
++    if (label.isEmpty) return;
++    await _init();
++    try {
++      await _tts.stop();
++      await _tts.speak(prettyLabel(label));
++    } catch (e) {
++      debugPrint('TTS speak failed: $e');
++    }
++  }
++
++  Future<void> stop() async {
++    try {
++      await _tts.stop();
++    } catch (_) {}
++  }
++}
+diff --git a/pubspec.yaml b/pubspec.yaml
+index f463b66..a299c5d 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -16,6 +16,7 @@ dependencies:
+   path_provider: ^2.1.4
+   path: ^1.9.0
+   intl: ^0.20.0
++  flutter_tts: ^4.2.0
+ 
+ dev_dependencies:
+   flutter_test:

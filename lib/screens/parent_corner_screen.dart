@@ -1,0 +1,218 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+
+import '../models/capture_record.dart';
+import '../services/db_helper.dart';
+import '../theme.dart';
+import '../widgets/shape_painters.dart';
+
+/// A simple stats page for grown-ups: how many of each shape were found.
+class ParentCornerScreen extends StatefulWidget {
+  const ParentCornerScreen({super.key});
+
+  @override
+  State<ParentCornerScreen> createState() => _ParentCornerScreenState();
+}
+
+class _ParentCornerScreenState extends State<ParentCornerScreen> {
+  List<CaptureRecord>? _items;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final rows = await DbHelper.instance.all();
+    if (mounted) setState(() => _items = rows);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Parent Corner',
+            style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+      ),
+      body: items == null
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: _content(items),
+            ),
+    );
+  }
+
+  Widget _content(List<CaptureRecord> items) {
+    final now = DateTime.now();
+    final startOfToday = DateTime(now.year, now.month, now.day);
+    final weekAgo = startOfToday.subtract(const Duration(days: 6));
+
+    final counts = <ShapeKind, int>{for (final k in ShapeKind.values) k: 0};
+    var today = 0;
+    var week = 0;
+    for (final r in items) {
+      final kind = shapeKindFromLabel(r.label);
+      if (kind != null) counts[kind] = counts[kind]! + 1;
+      if (!r.createdAt.isBefore(startOfToday)) today++;
+      if (!r.createdAt.isBefore(weekAgo)) week++;
+    }
+
+    final maxCount = counts.values.fold<int>(0, (a, b) => a > b ? a : b);
+    final shapesFound = counts.values.where((c) => c > 0).length;
+    ShapeKind? favourite;
+    if (maxCount > 0) {
+      favourite = counts.entries.firstWhere((e) => e.value == maxCount).key;
+    }
+    final last = items.isEmpty ? null : items.first.createdAt; // newest first
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+      children: [
+        Row(
+          children: [
+            Expanded(child: _statTile('${items.length}', 'Total shapes')),
+            const SizedBox(width: 12),
+            Expanded(child: _statTile('$today', 'Today')),
+            const SizedBox(width: 12),
+            Expanded(child: _statTile('$week', 'Last 7 days')),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _panel(
+          title: 'Shapes found',
+          child: Column(
+            children: [
+              for (final kind in ShapeKind.values) ...[
+                _countRow(kind, counts[kind]!, maxCount),
+                if (kind != ShapeKind.values.last) const SizedBox(height: 12),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _panel(
+          title: 'Highlights',
+          child: Column(
+            children: [
+              _fact(
+                Icons.favorite_rounded,
+                'Most found shape',
+                favourite == null ? 'None yet' : prettyLabel(favourite.name),
+              ),
+              const SizedBox(height: 10),
+              _fact(
+                Icons.category_rounded,
+                'Different shapes found',
+                '$shapesFound of ${ShapeKind.values.length}',
+              ),
+              const SizedBox(height: 10),
+              _fact(
+                Icons.access_time_rounded,
+                'Last capture',
+                last == null ? 'None yet' : DateFormat('MMM d, y  •  h:mm a').format(last),
+              ),
+            ],
+          ),
+        ),
+        if (items.isEmpty) ...[
+          const SizedBox(height: 20),
+          Text(
+            'Nothing yet. Shapes your child captures will be counted here.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 16, color: AppColors.ink.withValues(alpha: 0.7)),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _statTile(String value, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.blueSoft, width: 3),
+      ),
+      child: Column(
+        children: [
+          Text(value,
+              style: const TextStyle(
+                  fontSize: 32, fontWeight: FontWeight.w800, color: AppColors.blue)),
+          const SizedBox(height: 2),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  Widget _panel({required String title, required Widget child}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppColors.blueSoft, width: 3),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 14),
+          child,
+        ],
+      ),
+    );
+  }
+
+  Widget _countRow(ShapeKind kind, int count, int maxCount) {
+    final fraction = maxCount == 0 ? 0.0 : count / maxCount;
+    return Row(
+      children: [
+        ShapeIcon(kind, size: 34),
+        const SizedBox(width: 12),
+        SizedBox(
+          width: 82,
+          child: Text(prettyLabel(kind.name),
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+        ),
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: LinearProgressIndicator(
+              value: fraction,
+              minHeight: 14,
+              color: AppColors.blue,
+              backgroundColor: AppColors.blueSoft,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        SizedBox(
+          width: 32,
+          child: Text('$count',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        ),
+      ],
+    );
+  }
+
+  Widget _fact(IconData icon, String label, String value) {
+    return Row(
+      children: [
+        Icon(icon, size: 24, color: AppColors.blue),
+        const SizedBox(width: 10),
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 16))),
+        Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+      ],
+    );
+  }
+}

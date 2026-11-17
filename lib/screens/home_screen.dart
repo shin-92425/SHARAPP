@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import '../services/db_helper.dart';
 import '../services/shape_detector.dart';
+import '../services/speech_service.dart';
 import '../theme.dart';
 import '../widgets/shape_painters.dart';
 import 'history_screen.dart';
@@ -21,7 +22,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _ready = false;
 
   bool _continuous = false; // auto-save shapes as they are recognised
-  bool _paused = false; // frozen view
   bool _busy = false; // a frame is being processed
   bool _flash = false;
   bool _initializing = false;
@@ -76,7 +76,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       setState(() {
         _error = null;
         _ready = false;
-        _paused = false;
         _current = null;
       });
     }
@@ -133,7 +132,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _onFrame(CameraImage image) {
     final c = _controller;
-    if (c == null || _busy || _paused) return;
+    if (c == null || _busy) return;
     final now = DateTime.now();
     if (now.difference(_lastRun).inMilliseconds < 90) return; // ~10 looks/second
     _lastRun = now;
@@ -183,6 +182,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _save(DetectionResult r) async {
     final png = await renderCapturePng(r.silhouette);
     await DbHelper.instance.insert(label: r.label, confidence: r.confidence, png: png);
+    SpeechService.instance.speakShape(r.label); // say the shape after it is captured
     if (!mounted) return;
     setState(() => _flash = true);
     Future.delayed(const Duration(milliseconds: 150), () {
@@ -214,23 +214,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _save(r);
   }
 
-  Future<void> _togglePause() async {
-    final c = _controller;
-    if (c == null) return;
-    if (_paused) {
-      await c.resumePreview();
-      await c.startImageStream(_onFrame);
-      if (mounted) setState(() => _paused = false);
-    } else {
-      setState(() => _paused = true);
-      if (c.value.isStreamingImages) await c.stopImageStream();
-      await c.pausePreview();
-    }
-  }
-
-  Future<void> _toggleContinuous() async {
-    if (_paused) await _togglePause();
-    if (mounted) setState(() => _continuous = !_continuous);
+  void _toggleContinuous() {
+    setState(() => _continuous = !_continuous);
   }
 
   Future<void> _openHistory() async {
@@ -350,20 +335,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   child: Container(color: Colors.white),
                 ),
               ),
-              if (_paused)
-                Align(
-                  alignment: Alignment.topCenter,
-                  child: Container(
-                    margin: const EdgeInsets.only(top: 12),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: AppColors.ink.withValues(alpha: 0.8),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: const Text('Paused',
-                        style: TextStyle(color: Colors.white, fontSize: 16)),
-                  ),
-                ),
             ],
           ),
         ),
@@ -429,12 +400,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           onTap: _toggleContinuous,
         ),
         _Shutter(onTap: _shutter),
-        _RoundAction(
-          icon: _paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
-          label: _paused ? 'Resume' : 'Pause',
-          active: _paused,
-          onTap: _togglePause,
-        ),
+        // Same width as the Auto button, so the shutter stays centred.
+        const SizedBox(width: 68),
       ],
     );
   }
