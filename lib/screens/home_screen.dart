@@ -31,6 +31,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _misses = 0;
   String? _stableLabel;
   int _stableCount = 0;
+
+  // The last few frames' answers. The label on screen is a vote over these,
+  // so one odd frame can't make it flicker.
+  static const int _voteWindow = 5;
+  static const int _voteNeeded = 3;
+  final List<DetectionResult?> _recent = [];
+
   DateTime _lastRun = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastAutoSave = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -77,6 +84,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _error = null;
         _ready = false;
         _current = null;
+        _recent.clear();
       });
     }
     try {
@@ -149,9 +157,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _handleResult(DetectionResult? r, DateTime now) {
     if (!mounted) return;
+    _recent.add(r);
+    if (_recent.length > _voteWindow) _recent.removeAt(0);
+
     if (r == null) {
       _misses++;
       if (_misses >= 3) {
+        _recent.clear();
         _stableLabel = null;
         _stableCount = 0;
         if (_current != null) setState(() => _current = null);
@@ -159,20 +171,65 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       return;
     }
     _misses = 0;
-    if (r.label == _stableLabel) {
+
+    final v = _vote();
+    if (v == null) {
+      // The last few frames don't agree yet: show nothing rather than flicker.
+      _stableLabel = null;
+      _stableCount = 0;
+      if (_current != null) setState(() => _current = null);
+      return;
+    }
+
+    if (v.label == _stableLabel) {
       _stableCount++;
     } else {
-      _stableLabel = r.label;
+      _stableLabel = v.label;
       _stableCount = 1;
     }
-    setState(() => _current = r);
+    setState(() => _current = v);
 
     if (_continuous &&
         _stableCount >= 4 &&
         now.difference(_lastAutoSave).inMilliseconds > 2500) {
       _lastAutoSave = now;
-      _save(r);
+      _save(v);
     }
+  }
+
+  /// Majority vote over the last few frames. A different label must win
+  /// [_voteNeeded] of [_voteWindow] frames before it replaces the one on
+  /// screen; the label on screen stays while it still has 2 votes. Returns the
+  /// newest frame that carries the winning label (so the outline stays fresh).
+  DetectionResult? _vote() {
+    final counts = <String, int>{};
+    for (final x in _recent) {
+      if (x != null) counts[x.label] = (counts[x.label] ?? 0) + 1;
+    }
+    String? winner;
+    var best = 0;
+    counts.forEach((label, n) {
+      if (n > best) {
+        best = n;
+        winner = label;
+      }
+    });
+    final shown = _current?.label;
+    final shownVotes = shown == null ? 0 : (counts[shown] ?? 0);
+
+    String? pick;
+    if (winner != null && best >= _voteNeeded && winner != shown) {
+      pick = winner; // a clear new majority
+    } else if (shown != null && shownVotes >= 2) {
+      pick = shown; // keep what is already on screen
+    } else if (winner != null && best >= _voteNeeded) {
+      pick = winner;
+    }
+    if (pick == null) return null;
+    for (final x in _recent.reversed) {
+      if (x != null && x.label == pick) return x;
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------

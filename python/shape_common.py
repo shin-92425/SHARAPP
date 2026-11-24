@@ -1,18 +1,24 @@
 """
-Shared shape-finding pipeline.
+Shared shape-finding pipeline  (version 2).
 
-IMPORTANT: lib/services/shape_detector.dart is a line-by-line mirror of this
+IMPORTANT: lib/services/shape_detector.dart is a step-by-step mirror of this
 file. If you change a constant or a step here, change it there too, then
-retrain the model.
+retrain the model (python train.py --real dataset).
 
-Pipeline (works on a single grayscale frame):
-  1. shrink so the long side is MAX_SIDE pixels (nearest neighbour)
-  2. 3x3 box blur
-  3. Otsu threshold, tried both ways (dark-on-light and light-on-dark)
-  4. external contours -> keep the ones that are a sensible size and do not
-     touch the frame border
-  5. pick the best one (big and near the centre)
-  6. turn that contour into a 64x64 filled silhouette for the CNN
+Pipeline (works on a single upright grayscale frame):
+  1. shrink so the long side is MAX_SIDE pixels (INTER_AREA = proper averaging)
+  2. 3x3 Gaussian blur
+  3. flatten the lighting: divide by a heavily blurred copy of the picture, so
+     gradients and shadows stop fooling the threshold
+  4. Otsu threshold, tried both ways (dark-on-light and light-on-dark)
+  5. external contours -> keep sensible ones: right size, not touching the
+     frame border, not a thin sliver, not too "spiky/hollow"
+  6. rank them (big and near the centre) and keep the best few (TOP_K)
+  7. each candidate becomes a 64x64 filled silhouette for the CNN; the app
+     asks the CNN about every candidate and keeps the most convincing one
+
+Public API kept from version 1:  find_shape, silhouette, silhouette_points,
+analyse, LABELS, SIL, MAX_SIDE ...   New:  find_candidates, CLASSES, OTHER.
 """
 import cv2
 import numpy as np
@@ -24,17 +30,32 @@ MAX_AREA_FRAC = 0.60    # biggest shape (fraction of the frame)
 SIL = 64                # silhouette size fed to the CNN
 SIL_PAD = 6             # empty margin inside the silhouette
 
+FLATTEN_DIV = 8.0       # lighting-flatten blur sigma = long side / FLATTEN_DIV
+MIN_SOLIDITY = 0.35     # contour area / convex-hull area (a star is ~0.47)
+MAX_ELONGATION = 4.0    # long side / short side of the tightest box
+TOP_K = 3               # candidates handed to the CNN
+
 LABELS = ["circle", "heart", "square", "star", "triangle"]
+OTHER = "other"
+CLASSES = LABELS + [OTHER]      # what the CNN is trained to tell apart
 
 
 def shrink(gray):
-    """Nearest-neighbour shrink so the long side is MAX_SIDE."""
+    """Area-averaging shrink so the long side is MAX_SIDE."""
     h, w = gray.shape[:2]
     scale = MAX_SIDE / max(h, w)
     if scale >= 1.0:
         return gray
     nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-    return cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_NEAREST)
+    return cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_AREA)
+
+
+def flatten(blur):
+    """Divide out the slowly-changing lighting (shadows, gradients)."""
+    h, w = blur.shape[:2]
+    bg = cv2.GaussianBlur(blur, (0, 0), max(h, w) / FLATTEN_DIV)
+    flat = blur.astype(np.float32) / np.maximum(bg.astype(np.float32), 1.0) * 128.0
+    return np.clip(flat, 0, 255).astype(np.uint8)
 
 
 def polygon_area(pts):
@@ -43,21 +64,43 @@ def polygon_area(pts):
     return abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0
 
 
-def find_shape(gray):
+def _quality_ok(pts, area):
+    """Reject slivers (paper edges, table seams) and wispy/hollow blobs."""
+    hull = cv2.convexHull(pts.astype(np.float32).reshape(-1, 1, 2))
+    hull_area = cv2.contourArea(hull)
+    if hull_area <= 0 or area / hull_area < MIN_SOLIDITY:
+        return False
+    (_, _), (rw, rh), _ = cv2.minAreaRect(pts.astype(np.float32).reshape(-1, 1, 2))
+    short, long_ = min(rw, rh), max(rw, rh)
+    if short < 1.0 or long_ / short > MAX_ELONGATION:
+        return False
+    return True
+
+
+def _bbox_iou(a, b):
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def find_candidates(gray, k=TOP_K):
     """
-    Returns (contour Nx2 float array in the shrunken image's pixels,
-             (width, height) of the shrunken image) or (None, size).
+    Returns ([contour Nx2 float arrays, best first], (w, h) of the shrunken
+    image).  Contour points are in the shrunken image's pixels.
     """
     small = shrink(gray)
     h, w = small.shape[:2]
-    blur = cv2.blur(small, (3, 3))
+    blur = cv2.GaussianBlur(small, (3, 3), 0)
+    flat = flatten(blur)
     frame_area = float(w * h)
     cx, cy = w / 2.0, h / 2.0
     half_diag = (cx * cx + cy * cy) ** 0.5
 
-    best, best_score = None, 0.0
+    found = []   # (score, bbox, contour)
     for mode in (cv2.THRESH_BINARY, cv2.THRESH_BINARY_INV):
-        _, mask = cv2.threshold(blur, 0, 255, mode | cv2.THRESH_OTSU)
+        _, mask = cv2.threshold(flat, 0, 255, mode | cv2.THRESH_OTSU)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
         for c in contours:
@@ -72,12 +115,32 @@ def find_shape(gray):
             if (x0 <= BORDER_MARGIN or y0 <= BORDER_MARGIN or
                     x1 >= w - 1 - BORDER_MARGIN or y1 >= h - 1 - BORDER_MARGIN):
                 continue
+            if not _quality_ok(pts, area):
+                continue
             mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
             dist = (((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5) / half_diag
             score = area * (1.0 - 0.5 * dist)
-            if score > best_score:
-                best_score, best = score, pts.astype(np.float64)
-    return best, (w, h)
+            found.append((score, (float(x0), float(y0), float(x1), float(y1)),
+                          pts.astype(np.float64)))
+
+    found.sort(key=lambda t: -t[0])
+    kept = []
+    for score, box, pts in found:
+        if any(_bbox_iou(box, kb) > 0.85 for _, kb, _ in kept):
+            continue    # same blob seen by both thresholds
+        kept.append((score, box, pts))
+        if len(kept) >= k:
+            break
+    return [p for _, _, p in kept], (w, h)
+
+
+def find_shape(gray):
+    """
+    Single best candidate (the old API).  Returns (contour Nx2 float array in
+    the shrunken image's pixels, (width, height)) or (None, size).
+    """
+    cands, size = find_candidates(gray, k=1)
+    return (cands[0] if cands else None), size
 
 
 def silhouette_points(contour):
@@ -124,3 +187,9 @@ def analyse(gray):
     if contour is None:
         return None, None, size
     return silhouette(contour), contour, size
+
+
+def analyse_all(gray, k=TOP_K):
+    """Gray frame -> ([(silhouette, contour), ...] best first, size)."""
+    cands, size = find_candidates(gray, k)
+    return [(silhouette(c), c) for c in cands], size

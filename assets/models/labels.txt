@@ -3,3 +3,4 @@ heart
 square
 star
 triangle
+other
